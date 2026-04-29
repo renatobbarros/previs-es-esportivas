@@ -1,12 +1,13 @@
 """
 dashboard/app.py — Dashboard PRO do Sports Edge AI
-Interface intuitiva com monitoramento de notícias e sinais integrados.
+Interface única e intuitiva com monitoramento de notícias e sinais integrados.
 """
 import json
 import sys
 from datetime import datetime
 from pathlib import Path
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 
@@ -22,18 +23,22 @@ st.set_page_config(
     layout="wide"
 )
 
-# Estilo CSS Customizado para deixar mais intuitivo
+# Estilo CSS Customizado para o Modo Dark
 st.markdown("""
     <style>
-    .stMetric { background-color: #f0f2f6; padding: 10px; border-radius: 10px; }
-    .urgent-card { background-color: #ffebee; padding: 15px; border-radius: 10px; border-left: 5px solid #f44336; margin-bottom: 10px; }
-    .news-card { background-color: #e3f2fd; padding: 15px; border-radius: 10px; border-left: 5px solid #2196f3; margin-bottom: 10px; }
+    /* Tipografia e espaçamentos - Cores para Modo Dark */
+    .stMetric { background-color: #1e1e1e; padding: 15px; border-radius: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.2); }
+    .urgent-card { background-color: #3b1c1c; padding: 15px; border-radius: 12px; border-left: 6px solid #ff4d4f; margin-bottom: 15px; color: #fdfdfd; }
+    .news-card { background-color: #142838; padding: 15px; border-radius: 12px; border-left: 6px solid #1890ff; margin-bottom: 15px; color: #fdfdfd; }
+    h1, h2, h3 { font-family: 'Inter', sans-serif; font-weight: 600; color: #ffffff; }
+    .section-title { margin-top: 40px; margin-bottom: 20px; font-size: 24px; font-weight: 700; color: #e5e7eb; border-bottom: 2px solid #374151; padding-bottom: 10px; }
     </style>
 """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────────────
-# Carregamento de Dados
+# Funções de Dados e Estado
 # ─────────────────────────────────────────────────────────
+HISTORICO_FILE = config.DATA_DIR / "historico_apostas.csv"
 
 def load_json(path: Path):
     if path.exists():
@@ -45,173 +50,246 @@ def get_latest_signals():
     files = sorted(list(config.SIGNALS_DIR.glob("signals_*.json")), reverse=True)
     return load_json(files[0]) if files else []
 
+def add_bet_to_history(game: str, bet: str, odd: float, stake: float, bankroll: float):
+    novo_registro = {
+        "Data": datetime.today().strftime("%Y-%m-%d"),
+        "Jogo": game,
+        "Aposta": bet,
+        "Odd": odd,
+        "Stake (R$)": stake,
+        "Resultado": "⏳ Pendente",
+        "Retorno (R$)": 0.0,
+        "Lucro (R$)": 0.0,
+        "Banca Acumulada": bankroll
+    }
+    if HISTORICO_FILE.exists():
+        df_hist = pd.read_csv(HISTORICO_FILE)
+        df_hist = pd.concat([df_hist, pd.DataFrame([novo_registro])], ignore_index=True)
+    else:
+        df_hist = pd.DataFrame([novo_registro])
+    df_hist.to_csv(HISTORICO_FILE, index=False)
+
 # ─────────────────────────────────────────────────────────
 # Sidebar
 # ─────────────────────────────────────────────────────────
-
-st.sidebar.title("🚀 Central de Comando")
-st.sidebar.markdown("Configure sua banca e preferências para cálculos automáticos.")
-
-bankroll = st.sidebar.number_input("💸 Sua Banca Total (R$)", min_value=10.0, value=float(config.DEFAULT_BANKROLL))
-st.sidebar.divider()
-
-# Filtros Rápidos
-st.sidebar.subheader("Filtros de Sinais")
-min_edge_ui = st.sidebar.slider("Edge Mínimo (%)", 0, 30, 6)
-conf_min_ui = st.sidebar.select_slider("Confiança Mínima", options=["Baixa", "Média", "Alta"], value="Média")
-
-st.sidebar.divider()
-st.sidebar.caption("O sistema atualiza sinais e notícias em tempo real no servidor.")
+with st.sidebar:
+    st.title("🎯 Controle da Banca")
+    st.markdown("Ajuste sua banca para calibrar as stakes automáticas.")
+    bankroll = st.number_input("💸 Sua Banca Total (R$)", min_value=10.0, value=float(config.DEFAULT_BANKROLL))
+    
+    st.divider()
+    st.subheader("Filtros de Inteligência")
+    min_edge_ui = st.slider("Edge Mínimo (%)", 0, 30, 6)
+    conf_min_ui = st.select_slider("Confiança Mínima da IA", options=["Baixa", "Média", "Alta"], value="Média")
+    
+    with st.expander("💡 Entenda os Filtros"):
+        st.markdown("""
+        - **Edge**: É a "vantagem matemática" da IA. Exemplo: se a IA calcula que o time tem 60% de chance de ganhar, mas a odd da casa reflete apenas 50%, você tem um Edge (vantagem) de 10%.
+        - **Confiança Mínima**: Nível de certeza da IA naquela previsão, baseado em volume de dados, lesões e histórico recente.
+        """)
+    
+    st.divider()
+    st.caption("O sistema monitora o mercado em tempo real.")
 
 # ─────────────────────────────────────────────────────────
 # UI Principal
 # ─────────────────────────────────────────────────────────
-
-tab1, tab2, tab3, tab4 = st.tabs(["🔥 Sinais e Alertas", "📈 Performance", "🧮 Calculadoras", "📖 Guia"])
+st.title("Painel de Inteligência Sports Edge")
+st.markdown("Bem-vindo ao seu ecossistema unificado de análises esportivas e controle de banca.")
 
 # ==========================================
-# ABA 1: SINAIS E ALERTAS (AUTOMATIZADA)
+# SEÇÃO 1: NOTÍCIAS DE ÚLTIMA HORA
 # ==========================================
-with tab1:
-    col_main, col_news = st.columns([3, 1])
+urgent = load_json(config.DATA_DIR / "urgent_alerts.json")
+news = load_json(config.DATA_DIR / "news_alerts.json")
 
-    with col_main:
-        st.subheader("🎯 Oportunidades de Valor")
-        signals = get_latest_signals()
-        
-        # Filtro de confiança para comparação
-        conf_map = {"Baixa": 0, "Média": 1, "Alta": 2}
-        conf_val_map = {"low": 0, "medium": 1, "high": 2}
-
-        filtered = [
-            s for s in signals 
-            if s.get("edge", 0) >= min_edge_ui and 
-            conf_val_map.get(s.get("confidence", "low"), 0) >= conf_map[conf_min_ui]
-        ]
-
-        if not filtered:
-            st.info("Aguardando novas oportunidades de mercado que atinjam seus critérios...")
-        else:
-            for s in filtered:
-                game = s.get("game_info", {})
-                bet = s.get("best_bet")
-                team_bet = game.get(f"{bet}_team") if bet in ["home", "away"] else "Empate"
-                odd = game.get("best_odds", {}).get(bet, {}).get("odd", 0)
-                book = game.get("best_odds", {}).get(bet, {}).get("bookmaker", "?")
-                
-                stake_pct = s.get("recommended_stake_pct", 0)
-                stake_brl = (stake_pct / 100) * bankroll
-                
-                # Cabeçalho Intuitivo
-                with st.container(border=True):
-                    c1, c2, c3 = st.columns([2, 1, 1])
-                    with c1:
-                        st.markdown(f"### {game.get('home_team')} x {game.get('away_team')}")
-                        st.caption(f"🏆 {game.get('league')} | ⏰ {game.get('commence_time')}")
-                    with c2:
-                        st.metric("Aposta", team_bet, f"@{odd:.2f}")
-                    with c3:
-                        st.metric("Stake", f"R$ {stake_brl:.2f}", f"{stake_pct:.1f}%")
-
-                    with st.expander("Ver Análise Estratégica"):
-                        st.markdown(f"**Raciocínio:** {s.get('reasoning')}")
-                        st.markdown(f"**📍 Onde apostar:** {book}")
-                        
-                        st.divider()
-                        f1, f2 = st.columns(2)
-                        f1.write("**✅ Por que apostar:**")
-                        for kf in s.get("key_factors", []): f1.write(f"- {kf}")
-                        f2.write("**⚠️ Riscos (Red Flags):**")
-                        for rf in s.get("red_flags", []): f2.write(f"- {rf}")
-                        
-                        # Botão de Cópia Rápida (Simulado)
-                        st.code(f"Aposta: {team_bet} | Odd: {odd} | Valor: R$ {stake_brl:.2f}", language="text")
-
-    with col_news:
-        st.subheader("🔔 Notícias de Última Hora")
-        urgent = load_json(config.DATA_DIR / "urgent_alerts.json")
-        news = load_json(config.DATA_DIR / "news_alerts.json")
-
-        if not urgent and not news:
-            st.caption("Nenhum alerta de impacto detectado recentemente.")
-        
-        for u in urgent[:3]:
+if urgent or news:
+    st.markdown('<div class="section-title">🔔 Radar de Notícias</div>', unsafe_allow_html=True)
+    n1, n2 = st.columns([1, 1])
+    with n1:
+        for u in urgent[:2]:
+            teams = u.get('teams_affected')
+            team_str = teams[0] if teams else 'Esporte'
             st.markdown(f"""<div class="urgent-card">
-                <strong>🚨 URGENTE: {u['teams_affected'][0] if u['teams_affected'] else 'Esporte'}</strong><br>
-                {u['title']}<br>
-                <small>Impacto: {u['impact']} | Ação: {u['action']}</small>
+                <strong>🚨 URGENTE: {team_str}</strong><br>
+                {u.get('title', 'Sem título')}<br>
+                <small>Impacto: {u.get('impact', 'N/A')} | Ação: {u.get('action', 'N/A')}</small>
             </div>""", unsafe_allow_html=True)
-            
-        for n in news[:5]:
+    with n2:
+        for n in news[:2]:
             st.markdown(f"""<div class="news-card">
-                <strong>🔹 {n['sport'].upper()}</strong><br>
-                {n['title']}<br>
-                <small>Impacto: {n['impact']}</small>
+                <strong>🔹 {n.get('sport', 'other').upper()}</strong><br>
+                {n.get('title', 'Sem título')}<br>
+                <small>Impacto: {n.get('impact', 'N/A')}</small>
             </div>""", unsafe_allow_html=True)
 
 # ==========================================
-# ABA 2: PERFORMANCE
+# SEÇÃO 2: PERFORMANCE & HISTÓRICO
 # ==========================================
-with tab2:
-    st.subheader("Análise de Resultados")
-    HISTORICO_FILE = config.DATA_DIR / "historico_apostas.csv"
-    
-    if HISTORICO_FILE.exists():
-        df = pd.read_csv(HISTORICO_FILE)
-        
-        # Dashboard de métricas no topo
-        wins = len(df[df["Resultado"] == "✅ Ganhou"])
-        losses = len(df[df["Resultado"] == "❌ Perdeu"])
-        total = wins + losses
-        win_rate = (wins/total*100) if total > 0 else 0
-        lucro = df["Lucro (R$)"].sum()
-        
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Win Rate", f"{win_rate:.1f}%", f"{wins}W - {losses}L")
-        m2.metric("Lucro Acumulado", f"R$ {lucro:.2f}", delta_color="normal")
-        m3.metric("ROI", f"{(lucro/(df['Stake (R$)'].sum())*100):.1f}%" if total > 0 else "0%")
+st.markdown('<div class="section-title">📊 Evolução da sua Banca</div>', unsafe_allow_html=True)
 
-        st.divider()
-        st.markdown("### Histórico Detalhado")
-        st.data_editor(df, use_container_width=True)
-    else:
-        st.info("Comece a registrar suas apostas para ver as métricas de performance aqui.")
-
-# ==========================================
-# ABA 3: CALCULADORAS
-# ==========================================
-with tab3:
-    st.subheader("Calculadoras de Apoio")
-    c1, c2 = st.columns(2)
+if HISTORICO_FILE.exists():
+    df = pd.read_csv(HISTORICO_FILE)
     
-    with c1:
-        with st.container(border=True):
-            st.markdown("### 🧮 Critério de Kelly")
-            k_odd = st.number_input("Odd do Evento", value=2.0)
-            k_prob = st.slider("Sua Probabilidade (%)", 1, 99, 55) / 100
+    wins = len(df[df["Resultado"] == "✅ Ganhou"])
+    losses = len(df[df["Resultado"] == "❌ Perdeu"])
+    total_resolvidos = wins + losses
+    win_rate = (wins/total_resolvidos*100) if total_resolvidos > 0 else 0
+    lucro = df["Lucro (R$)"].sum()
+    total_apostado = df[df["Resultado"] != "⏳ Pendente"]['Stake (R$)'].sum()
+    
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Win Rate", f"{win_rate:.1f}%", f"{wins}W - {losses}L")
+    m2.metric("Lucro Acumulado", f"R$ {lucro:.2f}", delta_color="normal")
+    m3.metric("ROI", f"{(lucro/total_apostado*100):.1f}%" if total_apostado > 0 else "0%")
+    m4.metric("Apostas Pendentes", f"{len(df[df['Resultado'] == '⏳ Pendente'])}")
+    
+    st.write("") 
+    
+    # Gráficos Altair
+    df_chart = df.copy()
+    df_chart['Data'] = pd.to_datetime(df_chart['Data'])
+    daily_profit = df_chart.groupby('Data')['Lucro (R$)'].sum().reset_index()
+    daily_profit['Lucro Acumulado'] = daily_profit['Lucro (R$)'].cumsum()
+    
+    if not daily_profit.empty:
+        c1, c2 = st.columns([2, 1])
+        with c1:
+            st.markdown("**Crescimento Acumulado**")
+            area_chart = alt.Chart(daily_profit).mark_area(
+                line={'color':'#1890ff'},
+                color=alt.Gradient(
+                    gradient='linear',
+                    stops=[alt.GradientStop(color='#1890ff', offset=0),
+                           alt.GradientStop(color='white', offset=1)],
+                    x1=1, x2=1, y1=1, y2=0
+                )
+            ).encode(
+                x=alt.X('Data:T', title='Data', axis=alt.Axis(format='%d/%m')),
+                y=alt.Y('Lucro Acumulado:Q', title='Lucro Acumulado (R$)'),
+                tooltip=['Data:T', 'Lucro Acumulado:Q']
+            ).properties(height=250)
+            st.altair_chart(area_chart, use_container_width=True)
             
-            b = k_odd - 1
-            f = (k_prob * b - (1 - k_prob)) / b
-            
-            if f > 0:
-                st.success(f"Sugestão Kelly (25% Fracionado): **R$ {bankroll * f * 0.25:.2f}**")
-                st.caption(f"Isso representa {(f*0.25*100):.1f}% da sua banca.")
-            else:
-                st.error("Sem vantagem matemática nesta odd/probabilidade.")
+        with c2:
+            st.markdown("**Resultado Diário**")
+            bar_chart = alt.Chart(daily_profit).mark_bar(cornerRadiusTopLeft=3, cornerRadiusTopRight=3).encode(
+                x=alt.X('Data:T', title='Data', axis=alt.Axis(format='%d/%m')),
+                y=alt.Y('Lucro (R$):Q', title='P&L (R$)'),
+                color=alt.condition(
+                    alt.datum['Lucro (R$)'] > 0,
+                    alt.value('#52c41a'), 
+                    alt.value('#ff4d4f')  
+                ),
+                tooltip=['Data:T', 'Lucro (R$):Q']
+            ).properties(height=250)
+            st.altair_chart(bar_chart, use_container_width=True)
 
-    with c2:
-        # Espaço reservado para mais ferramentas
-        pass
-
-# ==========================================
-# ABA 4: GUIA
-# ==========================================
-with tab4:
-    st.markdown("""
-    ### 📖 Como funciona a automação?
-    1. **Monitor de Notícias:** Roda a cada 30min buscando lesões e furos de reportagem.
-    2. **Busca de Odds:** O sistema varre as casas de apostas automaticamente a cada 2 horas.
-    3. **Triagem de IA:** O Llama 3.1 analisa as odds e só libera os sinais que aparecem na Tab 1 se o 'Edge' for positivo.
+    # Editor Planilha
+    st.markdown("**Acompanhamento de Apostas** (Para apagar: marque a caixinha na primeira coluna da linha e aperte a tecla **Delete**)")
+    edited_df = st.data_editor(
+        df,
+        column_config={
+            "Resultado": st.column_config.SelectboxColumn(
+                "Resultado da Aposta",
+                options=["⏳ Pendente", "✅ Ganhou", "❌ Perdeu", "🔄 Reembolso"],
+                required=True
+            ),
+            "Data": st.column_config.Column(disabled=True),
+            "Retorno (R$)": st.column_config.Column(disabled=True),
+            "Lucro (R$)": st.column_config.Column(disabled=True),
+            "Banca Acumulada": st.column_config.Column(disabled=True)
+        },
+        use_container_width=True,
+        hide_index=False, # Precisa ser False para a caixinha de exclusão aparecer
+        num_rows="dynamic"
+    )
     
-    **Dica:** Sempre confira a aba de Notícias antes de colocar uma aposta, mesmo que o sinal da IA seja bom. Uma notícia de última hora pode ter mudado tudo!
-    """)
+    if not edited_df.equals(df):
+        # Limpa linhas vazias que o usuário possa ter adicionado acidentalmente
+        edited_df = edited_df.dropna(subset=['Jogo']).copy()
+        
+        for idx in edited_df.index:
+            new_res = edited_df.at[idx, "Resultado"]
+            try:
+                odd = float(edited_df.at[idx, "Odd"])
+            except (ValueError, TypeError):
+                odd = 1.0
+                edited_df.at[idx, "Odd"] = 1.0
+                
+            try:
+                stake = float(edited_df.at[idx, "Stake (R$)"])
+            except (ValueError, TypeError):
+                stake = 0.0
+                edited_df.at[idx, "Stake (R$)"] = 0.0
+            
+            if new_res == "✅ Ganhou":
+                edited_df.at[idx, "Retorno (R$)"] = stake * odd
+                edited_df.at[idx, "Lucro (R$)"] = (stake * odd) - stake
+            elif new_res == "❌ Perdeu":
+                edited_df.at[idx, "Retorno (R$)"] = 0.0
+                edited_df.at[idx, "Lucro (R$)"] = -stake
+            elif new_res == "🔄 Reembolso":
+                edited_df.at[idx, "Retorno (R$)"] = stake
+                edited_df.at[idx, "Lucro (R$)"] = 0.0
+            else: 
+                edited_df.at[idx, "Retorno (R$)"] = 0.0
+                edited_df.at[idx, "Lucro (R$)"] = 0.0
+        
+        edited_df.to_csv(HISTORICO_FILE, index=False)
+        st.success("Histórico e lucros atualizados com sucesso!")
+        st.rerun()
+
+else:
+    st.info("Você ainda não tem apostas registradas. O dashboard de performance aparecerá aqui assim que a primeira aposta for feita.")
+
+# ==========================================
+# SEÇÃO 3: OPORTUNIDADES DA IA (SINAIS)
+# ==========================================
+st.markdown('<div class="section-title">🎯 Recomendações da IA (Value Bets)</div>', unsafe_allow_html=True)
+signals = get_latest_signals()
+
+conf_map = {"Baixa": 0, "Média": 1, "Alta": 2}
+conf_val_map = {"low": 0, "medium": 1, "high": 2}
+
+filtered = [
+    s for s in signals 
+    if s.get("edge", 0) >= min_edge_ui and 
+    conf_val_map.get(s.get("confidence", "low"), 0) >= conf_map[conf_min_ui]
+]
+
+if not filtered:
+    st.info("Aguardando novas oportunidades do mercado que batam seus filtros atuais de Edge e Confiança...")
+else:
+    cols = st.columns(len(filtered) if len(filtered) < 3 else 3)
+    for i, s in enumerate(filtered):
+        game = s.get("game_info", {})
+        bet = s.get("best_bet")
+        team_bet = game.get(f"{bet}_team") if bet in ["home", "away"] else "Empate"
+        odd = game.get("best_odds", {}).get(bet, {}).get("odd", 0)
+        book = "Betnacional" # Forçado para o usuário
+
+        
+        stake_pct = s.get("recommended_stake_pct", 0)
+        stake_brl = (stake_pct / 100) * bankroll
+        
+        game_title = f"{game.get('home_team')} x {game.get('away_team')}"
+        
+        col_idx = i % 3
+        with cols[col_idx]:
+            with st.container(border=True):
+                st.markdown(f"#### {game_title}")
+                st.caption(f"🏆 {game.get('league')} | 🏠 {book}")
+                
+                st.metric("Recomendação", team_bet, f"@{odd:.2f}")
+                
+                st.write(f"**Stake Sugerida:** R$ {stake_brl:.2f} ({stake_pct:.1f}%)")
+                st.write(f"**Edge Encontrado:** {s.get('edge', 0)*100:.1f}%")
+                
+                with st.expander("📝 Razão da IA"):
+                    st.write(s.get('reasoning'))
+                
+                if st.button("✅ Registrar na Performance", key=f"auto_add_{i}_{game_title}", use_container_width=True, type="primary"):
+                    add_bet_to_history(game_title, team_bet, odd, stake_brl, bankroll)
+                    st.success(f"Aposta em '{team_bet}' registrada como Pendente!")
+                    st.rerun()
