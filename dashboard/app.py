@@ -27,7 +27,6 @@ st.set_page_config(
 st.markdown("""
     <style>
     /* Tipografia e espaçamentos - Cores para Modo Dark */
-    .stMetric { background-color: #1e1e1e; padding: 15px; border-radius: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.2); }
     .urgent-card { background-color: #3b1c1c; padding: 15px; border-radius: 12px; border-left: 6px solid #ff4d4f; margin-bottom: 15px; color: #fdfdfd; }
     .news-card { background-color: #142838; padding: 15px; border-radius: 12px; border-left: 6px solid #1890ff; margin-bottom: 15px; color: #fdfdfd; }
     h1, h2, h3 { font-family: 'Inter', sans-serif; font-weight: 600; color: #ffffff; }
@@ -78,14 +77,31 @@ with st.sidebar:
     bankroll = st.number_input("💸 Sua Banca Total (R$)", min_value=10.0, value=float(config.DEFAULT_BANKROLL))
     
     st.divider()
-    st.subheader("Filtros de Inteligência")
+    st.subheader("🔍 Filtros de Oportunidades")
+    
+    # Filtro de Probabilidade (Predictability +65)
+    min_prob_ui = st.slider("Probabilidade Mínima (%)", 0, 100, 50, help="Filtra apenas previsões com alta chance de acerto. Nota: NBA costuma ter probs menores (55-60%).")
+    
+    # Filtro de Odds
+    odd_range = st.slider("Faixa de Odds (@)", 1.0, 10.0, (1.20, 4.0), step=0.1)
+    min_odd, max_odd = odd_range
+    
+    # Filtro de Edge e Confiança
     min_edge_ui = st.slider("Edge Mínimo (%)", 0, 30, 6)
     conf_min_ui = st.select_slider("Confiança Mínima da IA", options=["Baixa", "Média", "Alta"], value="Média")
     
+    # Filtro de Data, Esporte e Mercado
+    date_filter = st.selectbox("Período dos Jogos", ["Todos", "Hoje", "Amanhã"])
+    sport_filter = st.multiselect("Esportes", ["Futebol", "Basquete"], default=["Futebol", "Basquete"])
+    market_filter = st.multiselect("Mercados de Interesse", ["Vencedor (ML)", "Gols/Pontos (Over/Under)", "Handicap (Spread)"], default=["Vencedor (ML)", "Gols/Pontos (Over/Under)"])
+    
     with st.expander("💡 Entenda os Filtros"):
-        st.markdown("""
-        - **Edge**: É a "vantagem matemática" da IA. Exemplo: se a IA calcula que o time tem 60% de chance de ganhar, mas a odd da casa reflete apenas 50%, você tem um Edge (vantagem) de 10%.
-        - **Confiança Mínima**: Nível de certeza da IA naquela previsão, baseado em volume de dados, lesões e histórico recente.
+        st.markdown(f"""
+        - **Vencedor (ML)**: Aposta direta em quem ganha o jogo.
+        - **Gols/Pontos**: Aposta se o jogo terá mais ou menos pontos/gols que o sugerido.
+        - **Handicap**: Vantagem ou desvantagem de pontos para um time (Ignorado se não selecionado).
+        - **Esportes**: Filtre entre **NBA/NBB** e os campeonatos de **Futebol**.
+        - **Probabilidade**: Chance matemática da previsão acontecer.
         """)
     
     st.divider()
@@ -130,6 +146,11 @@ st.markdown('<div class="section-title">📊 Evolução da sua Banca</div>', uns
 
 if HISTORICO_FILE.exists():
     df = pd.read_csv(HISTORICO_FILE)
+    
+    # Converte tipos para garantir compatibilidade com o editor do Streamlit
+    df['Data'] = pd.to_datetime(df['Data']).dt.date
+    df['Odd'] = pd.to_numeric(df['Odd'], errors='coerce')
+    df['Stake (R$)'] = pd.to_numeric(df['Stake (R$)'], errors='coerce')
     
     wins = len(df[df["Resultado"] == "✅ Ganhou"])
     losses = len(df[df["Resultado"] == "❌ Perdeu"])
@@ -195,10 +216,12 @@ if HISTORICO_FILE.exists():
                 options=["⏳ Pendente", "✅ Ganhou", "❌ Perdeu", "🔄 Reembolso"],
                 required=True
             ),
-            "Data": st.column_config.Column(disabled=True),
-            "Retorno (R$)": st.column_config.Column(disabled=True),
-            "Lucro (R$)": st.column_config.Column(disabled=True),
-            "Banca Acumulada": st.column_config.Column(disabled=True)
+            "Data": st.column_config.DateColumn("Data", format="YYYY-MM-DD"),
+            "Odd": st.column_config.NumberColumn("Odd", min_value=1.01, format="%.2f"),
+            "Stake (R$)": st.column_config.NumberColumn("Stake (R$)", min_value=0.0, format="%.2f"),
+            "Retorno (R$)": st.column_config.Column("Retorno (R$)", disabled=True),
+            "Lucro (R$)": st.column_config.Column("Lucro (R$)", disabled=True),
+            "Banca Acumulada": st.column_config.Column("Banca Acumulada", disabled=True)
         },
         use_container_width=True,
         hide_index=False, # Precisa ser False para a caixinha de exclusão aparecer
@@ -252,44 +275,226 @@ signals = get_latest_signals()
 conf_map = {"Baixa": 0, "Média": 1, "Alta": 2}
 conf_val_map = {"low": 0, "medium": 1, "high": 2}
 
-filtered = [
-    s for s in signals 
-    if s.get("edge", 0) >= min_edge_ui and 
-    conf_val_map.get(s.get("confidence", "low"), 0) >= conf_map[conf_min_ui]
-]
+# 1. Processamento e Normalização Inicial
+processed_signals = []
+for s in signals:
+    game = s.get("game_info", {})
+    market = s.get("market")
+    outcome = s.get("outcome")
+    outcome_lower = str(outcome).lower().strip()
+    
+    # Busca de Odd robusta
+    m_odds = game.get("best_odds", {}).get(market, {})
+    odd_data = m_odds.get(outcome)
+    if not odd_data:
+        if outcome_lower == "casa": odd_data = m_odds.get("home")
+        elif outcome_lower == "home": odd_data = m_odds.get("casa")
+        elif outcome_lower == "fora": odd_data = m_odds.get("away")
+        elif outcome_lower == "away": odd_data = m_odds.get("fora")
+        elif outcome_lower == "empate": odd_data = m_odds.get("draw")
+        elif outcome_lower == "draw": odd_data = m_odds.get("empate")
+    
+    odd = odd_data.get("odd", 0.0) if isinstance(odd_data, dict) else 0.0
+    
+    # Cálculo de Probabilidade
+    prob = s.get("prob", 0)
+    if prob <= 0 and market == "h2h":
+        h2h_mc = game.get("market_consensus", {}).get("h2h", {})
+        m_prob = h2h_mc.get(f"{outcome_lower}_prob", 0) * 100
+        if m_prob <= 0:
+            alt_key = "home" if outcome_lower == "casa" else "away" if outcome_lower == "fora" else "draw"
+            m_prob = h2h_mc.get(f"{alt_key}_prob", 0) * 100
+        if m_prob > 0:
+            prob = m_prob + s.get("edge", 0)
+    
+    # Resolve Nome (Prioridade para o 'best_bet' estilo Betnacional)
+    team_bet = s.get("best_bet")
+    if not team_bet or any(x in team_bet.lower() for x in ["casa", "home", "fora", "away", "draw", "empate", "under", "over", "subir"]):
+        if outcome_lower in ["casa", "home"]: team_bet = game.get("home_team", "Casa")
+        elif outcome_lower in ["fora", "away"]: team_bet = game.get("away_team", "Fora")
+        elif outcome_lower in ["empate", "draw"]: team_bet = "Empate"
+        else: 
+            # Garante que o número (point) apareça em Totals
+            clean_outcome = str(outcome).replace("Over", "Acima de").replace("Under", "Abaixo de").replace("Subir o Ponto", "Acima de").replace("Aposta no Under", "Abaixo de").replace("Sub ", "Abaixo de ")
+            team_bet = clean_outcome
+    
+    # Limpeza final de segurança para garantir o formato "Acima de X"
+    if market == "totals" and "de" in team_bet and not any(char.isdigit() for char in team_bet):
+        point_val = str(outcome).split()[-1] # Tenta pegar o número do final do outcome original
+        team_bet = f"{team_bet} {point_val}"
+
+    # Data do Jogo
+    dt_str = game.get("commence_time", "")
+    try: dt_obj = datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
+    except: dt_obj = datetime.max
+
+    # Adiciona ao lote processado
+    s_processed = s.copy()
+    s_processed.update({
+        "norm_odd": odd,
+        "norm_prob": prob,
+        "norm_team": team_bet,
+        "dt_obj": dt_obj
+    })
+    processed_signals.append(s_processed)
+
+# 2. Aplicação de Filtros
+filtered = []
+hoje = datetime.now().date()
+for s in processed_signals:
+    # Filtro de Confiança e Edge
+    if s.get("edge", 0) < min_edge_ui: continue
+    if conf_val_map.get(s.get("confidence", "low"), 0) < conf_map[conf_min_ui]: continue
+    
+    # Filtro de Probabilidade
+    if s.get("norm_prob", 0) < min_prob_ui: continue
+    
+    # Filtro de Odds
+    if not (min_odd <= s.get("norm_odd", 0) <= max_odd): continue
+    
+    # Filtro de Data
+    dt_jogo = s["dt_obj"].date()
+    if date_filter == "Hoje" and dt_jogo != hoje: continue
+    if date_filter == "Amanhã" and dt_jogo != hoje + pd.Timedelta(days=1): continue
+    
+    # Filtro de Esporte
+    s_sport = s.get("game_info", {}).get("sport", "").lower()
+    esporte_alvo = "Futebol" if ("soccer" in s_sport or "football" in s_sport) else "Basquete" if "basketball" in s_sport else "Outros"
+    if esporte_alvo not in sport_filter: continue
+    
+    # Filtro de Mercado
+    s_market = s.get("market")
+    if "Vencedor (ML)" in market_filter and "Gols/Pontos (Over/Under)" not in market_filter and "Handicap (Spread)" not in market_filter:
+        if s_market != "h2h": continue
+    if "Gols/Pontos (Over/Under)" in market_filter and "Vencedor (ML)" not in market_filter and "Handicap (Spread)" not in market_filter:
+        if s_market != "totals": continue
+    
+    # Lógica de exclusão robusta
+    if "Handicap (Spread)" not in market_filter and s_market == "spreads": continue
+    if "Vencedor (ML)" not in market_filter and s_market == "h2h": continue
+    if "Gols/Pontos (Over/Under)" not in market_filter and s_market == "totals": continue
+    
+    if not market_filter: continue
+    
+    filtered.append(s)
+
+# Ordenação Cronológica
+filtered = sorted(filtered, key=lambda x: x["dt_obj"])
 
 if not filtered:
     st.info("Aguardando novas oportunidades do mercado que batam seus filtros atuais de Edge e Confiança...")
 else:
-    cols = st.columns(len(filtered) if len(filtered) < 3 else 3)
-    for i, s in enumerate(filtered):
-        game = s.get("game_info", {})
-        bet = s.get("best_bet")
-        team_bet = game.get(f"{bet}_team") if bet in ["home", "away"] else "Empate"
-        odd = game.get("best_odds", {}).get(bet, {}).get("odd", 0)
-        book = "Betnacional" # Forçado para o usuário
+    # Layout em Grid (3 colunas)
+    for row_idx in range(0, len(filtered), 3):
+        cols = st.columns(3)
+        for col_idx, s_idx in enumerate(range(row_idx, min(row_idx + 3, len(filtered)))):
+            s = filtered[s_idx]
+            game = s.get("game_info", {})
+            market = s.get("market")
+            outcome = s.get("outcome")
+            
+            # Usa valores normalizados
+            team_bet = s["norm_team"]
+            odd = s["norm_odd"]
+            prob = s["norm_prob"]
+            book = "Betnacional"
+            
+            stake_pct = s.get("recommended_stake_pct", 0)
+            stake_brl = max(1.0, (stake_pct / 100) * bankroll) # Mínimo de R$ 1,00 para Betnacional
+            display_date = s["dt_obj"].strftime("%d/%m — %H:%M") if s["dt_obj"] != datetime.max else "Data Indisp."
 
+            game_title = f"{game.get('home_team')} x {game.get('away_team')}"
+            
+            with cols[col_idx]:
+                with st.container(border=True):
+                    # Header do Card com Data e Badge de Probabilidade
+                    prob_html = f"""
+                        <span style="background-color: #1e3a8a; color: #93c5fd; padding: 2px 8px; border-radius: 6px; font-size: 0.75rem; font-weight: bold; border: 1px solid #3b82f6;">
+                            {prob:.0f}% Chance
+                        </span>
+                    """ if prob > 0 else ""
+
+                    st.markdown(f"""
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                            <span style="font-size: 0.85rem; color: #9ca3af; font-weight: 500;">📅 {display_date}</span>
+                            {prob_html}
+                        </div>
+                    """, unsafe_allow_html=True)
+                    
+                    st.markdown(f"#### {game_title}")
+                    st.caption(f"🏆 {game.get('league')} | 🏠 {book}")
+                    
+                    st.metric("Recomendação", team_bet, f"@{odd:.2f}".replace('.', ','))
+                    
+                    st.write(f"**Stake Sugerida:** R$ {stake_brl:.2f} ({stake_pct:.1f}%)")
+                    st.write(f"**Edge Encontrado:** {s.get('edge', 0)*100:.1f}%")
+                    
+                    with st.expander("📝 Razão da IA"):
+                        st.write(s.get('reasoning'))
+                    
+                    if st.button("✅ Registrar", key=f"auto_add_{s_idx}_{game_title}", use_container_width=True, type="primary"):
+                        add_bet_to_history(game_title, team_bet, odd, stake_brl, bankroll)
+                        st.success(f"Aposta em '{team_bet}' registrada!")
+                        st.rerun()
+                    
+    # --- Calendário de Eventos Futuros ---
+    st.markdown('<div class="section-title">📅 Agenda de Eventos Futuros</div>', unsafe_allow_html=True)
+    st.markdown("Acompanhe o horário das partidas recomendadas pela IA.")
+    
+    agenda_data = []
+    for s in filtered:
+        game = s.get("game_info", {})
+        dt_str = game.get("commence_time", "")
+        # Tenta parsear a data para ordenar corretamente
+        try:
+            dt_obj = datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
+            display_date = dt_obj.strftime("%d/%m/%Y às %H:%M")
+        except:
+            dt_obj = datetime.max  # Coloca os desconhecidos no final
+            display_date = dt_str
+            
+        # Extrai informações específicas para o card da agenda (Usa os valores já normalizados)
+        item_team = s.get("norm_team", s.get("outcome"))
+        # Limpeza final para termos técnicos que escaparam
+        item_team = str(item_team).replace("Sub ", "Abaixo de ").replace("Subir o Ponto", "Acima de").replace("Aposta no Under", "Abaixo de").replace(" pontos", "")
         
-        stake_pct = s.get("recommended_stake_pct", 0)
-        stake_brl = (stake_pct / 100) * bankroll
+        item_stake_brl = max(1.0, (s.get("recommended_stake_pct", 0) / 100) * bankroll)
         
-        game_title = f"{game.get('home_team')} x {game.get('away_team')}"
+        agenda_data.append({
+            "dt_obj": s.get("dt_obj", datetime.max),
+            "Horário (BRT)": display_date,
+            "Esporte/Liga": game.get('league', 'Desconhecido'),
+            "Jogo": f"{game.get('home_team')} x {game.get('away_team')}",
+            "Quem Apostar": item_team,
+            "Quanto Apostar": f"R$ {item_stake_brl:.2f}",
+            "Perspectiva": f"{s.get('edge', 0)*100:.1f}% de Edge",
+            "prob": s.get("norm_prob", 0)
+        })
         
-        col_idx = i % 3
-        with cols[col_idx]:
-            with st.container(border=True):
-                st.markdown(f"#### {game_title}")
-                st.caption(f"🏆 {game.get('league')} | 🏠 {book}")
-                
-                st.metric("Recomendação", team_bet, f"@{odd:.2f}")
-                
-                st.write(f"**Stake Sugerida:** R$ {stake_brl:.2f} ({stake_pct:.1f}%)")
-                st.write(f"**Edge Encontrado:** {s.get('edge', 0)*100:.1f}%")
-                
-                with st.expander("📝 Razão da IA"):
-                    st.write(s.get('reasoning'))
-                
-                if st.button("✅ Registrar na Performance", key=f"auto_add_{i}_{game_title}", use_container_width=True, type="primary"):
-                    add_bet_to_history(game_title, team_bet, odd, stake_brl, bankroll)
-                    st.success(f"Aposta em '{team_bet}' registrada como Pendente!")
-                    st.rerun()
+    if agenda_data:
+        # Ordena a agenda pelo objeto datetime real (do mais próximo para o mais distante)
+        agenda_data = sorted(agenda_data, key=lambda x: x["dt_obj"])
+        
+        # Visualização em Grid
+        agenda_cols = st.columns(3 if len(agenda_data) >= 3 else len(agenda_data))
+        for i, item in enumerate(agenda_data):
+            with agenda_cols[i % len(agenda_cols)]:
+                with st.container(border=True):
+                    # Badge de Probabilidade para Agenda
+                    prob = item.get("prob", 0)
+                    prob_html = f"""
+                        <div style="text-align: right; margin-bottom: -20px;">
+                            <span style="background-color: #064e3b; color: #6ee7b7; padding: 2px 8px; border-radius: 6px; font-size: 0.7rem; font-weight: bold; border: 1px solid #10b981;">
+                                {prob:.0f}% Chance
+                            </span>
+                        </div>
+                    """ if prob > 0 else ""
+                    
+                    st.markdown(prob_html, unsafe_allow_html=True)
+                    st.markdown(f"**{item['Jogo']}**")
+                    st.caption(f"⏰ {item['Horário (BRT)']} | 🏆 {item['Esporte/Liga']}")
+                    st.write(f"👉 **Em quem:** {item['Quem Apostar']}")
+                    st.write(f"💰 **Quanto:** {item['Quanto Apostar']}")
+                    st.write(f"📈 **Edge:** {item['Perspectiva']}")
+    else:
+        st.info("Nenhum evento agendado nos filtros atuais.")

@@ -135,43 +135,68 @@ class OddsFetcher:
                 "away_team": game["away_team"],
                 "commence_time": dt_br.strftime("%Y-%m-%d %H:%M:%S"),
                 "bookmakers": {},
-                "best_odds": {"home": {"odd": 0.0, "bookmaker": ""}, "draw": {"odd": 0.0, "bookmaker": ""}, "away": {"odd": 0.0, "bookmaker": ""}},
-                "market_consensus": {"home_prob": 0.0, "draw_prob": 0.0, "away_prob": 0.0}
+                "best_odds": {
+                    "h2h": {"casa": {"odd": 0.0, "bookmaker": ""}, "empate": {"odd": 0.0, "bookmaker": ""}, "fora": {"odd": 0.0, "bookmaker": ""}},
+                    "totals": {}, # Ex: "Over 2.5": {"odd": 2.1, "bookmaker": "Bet365"}
+                    "spreads": {} # Ex: "Casa -1.5": {"odd": 1.9, "bookmaker": "Pinnacle"}
+                },
+                "market_consensus": {"h2h": {"casa_prob": 0.0, "empate_prob": 0.0, "fora_prob": 0.0}}
             }
 
-            all_no_vig_probs = []
+            all_h2h_no_vig = []
             
             for bm in game.get("bookmakers", []):
                 bm_key = bm["key"]
-                h2h = next((m for m in bm["markets"] if m["key"] == "h2h"), None)
+                bm_title = bm["title"]
+                item["bookmakers"][bm_key] = {"markets": {}}
                 
-                if h2h:
-                    odds = {o["name"]: o["price"] for o in h2h["outcomes"]}
+                for market in bm.get("markets", []):
+                    m_key = market["key"]
+                    outcomes = market["outcomes"]
                     
-                    # Normaliza nomes para home, draw, away
-                    normalized_odds = {}
-                    for name, price in odds.items():
-                        if name == item["home_team"]: key = "home"
-                        elif name == item["away_team"]: key = "away"
-                        else: key = "draw"
-                        normalized_odds[key] = price
-                    
-                    item["bookmakers"][bm_key] = normalized_odds
-                    
-                    # Update Best Odds
-                    for key, price in normalized_odds.items():
-                        if price > item["best_odds"][key]["odd"]:
-                            item["best_odds"][key] = {"odd": price, "bookmaker": bm["title"]}
-                    
-                    # Calcula no-vig para este bookie
-                    all_no_vig_probs.append(self.calculate_no_vig_probs(normalized_odds))
+                    if m_key == "h2h":
+                        odds = {o["name"]: o["price"] for o in outcomes}
+                        normalized_h2h = {}
+                        for name, price in odds.items():
+                            if name == item["home_team"]: key = "casa"
+                            elif name == item["away_team"]: key = "fora"
+                            else: key = "empate"
+                            normalized_h2h[key] = price
+                            
+                            # Update Best Odds H2H
+                            if price > item["best_odds"]["h2h"][key]["odd"]:
+                                item["best_odds"]["h2h"][key] = {"odd": price, "bookmaker": bm_title}
+                        
+                        item["bookmakers"][bm_key]["markets"]["h2h"] = normalized_h2h
+                        all_h2h_no_vig.append(self.calculate_no_vig_probs(normalized_h2h))
+                        
+                    elif m_key == "totals":
+                        # Outcomes: Over/Under with point
+                        for o in outcomes:
+                            label = f"{o['name']} {o['point']}"
+                            price = o["price"]
+                            item["bookmakers"][bm_key]["markets"].setdefault("totals", {})[label] = price
+                            
+                            if label not in item["best_odds"]["totals"] or price > item["best_odds"]["totals"][label]["odd"]:
+                                item["best_odds"]["totals"][label] = {"odd": price, "bookmaker": bm_title}
+                                
+                    elif m_key == "spreads":
+                        # Outcomes: Team name with point
+                        for o in outcomes:
+                            team_type = "Casa" if o["name"] == item["home_team"] else "Fora"
+                            label = f"{team_type} {o['point']:+}"
+                            price = o["price"]
+                            item["bookmakers"][bm_key]["markets"].setdefault("spreads", {})[label] = price
+                            
+                            if label not in item["best_odds"]["spreads"] or price > item["best_odds"]["spreads"][label]["odd"]:
+                                item["best_odds"]["spreads"][label] = {"odd": price, "bookmaker": bm_title}
 
-            # Calcula consenso (média das probabilidades no-vig)
-            if all_no_vig_probs:
-                for key in ["home", "draw", "away"]:
-                    probs = [p.get(key, 0) for p in all_no_vig_probs if key in p]
+            # Calcula consenso H2H
+            if all_h2h_no_vig:
+                for key in ["casa", "empate", "fora"]:
+                    probs = [p.get(key, 0) for p in all_h2h_no_vig if key in p]
                     if probs:
-                        item["market_consensus"][f"{key}_prob"] = round(sum(probs) / len(probs), 4)
+                        item["market_consensus"]["h2h"][f"{key}_prob"] = round(sum(probs) / len(probs), 4)
 
             processed.append(item)
         return processed
@@ -187,19 +212,19 @@ class OddsFetcher:
 
         summary_data = []
         for g in games:
-            # Calcula spread (eficiência do mercado)
-            # Diferença entre a melhor e a pior odd encontrada para o time da casa
-            h_odds = [bm.get("home") for bm in g["bookmakers"].values() if "home" in bm]
+            # Calcula spread (eficiência do mercado) em H2H
+            h_odds = [bm["markets"]["h2h"].get("casa") for bm in g["bookmakers"].values() 
+                     if "h2h" in bm["markets"] and "casa" in bm["markets"]["h2h"]]
             spread = max(h_odds) - min(h_odds) if len(h_odds) > 1 else 0.0
 
             summary_data.append({
                 "Jogo": f"{g['home_team']} x {g['away_team']}",
                 "Início (BRT)": g["commence_time"],
-                "Melhor Home": f"{g['best_odds']['home']['odd']:.2f} ({g['best_odds']['home']['bookmaker']})",
-                "Melhor Draw": f"{g['best_odds']['draw']['odd']:.2f} ({g['best_odds']['draw']['bookmaker']})",
-                "Melhor Away": f"{g['best_odds']['away']['odd']:.2f} ({g['best_odds']['away']['bookmaker']})",
-                "Spread (H)": round(spread, 2),
-                "Consenso Home": f"{g['market_consensus']['home_prob']:.1%}"
+                "Melhor Casa": f"{g['best_odds']['h2h']['casa']['odd']:.2f} ({g['best_odds']['h2h']['casa']['bookmaker']})",
+                "Melhor Empate": f"{g['best_odds']['h2h']['empate']['odd']:.2f} ({g['best_odds']['h2h']['empate']['bookmaker']})",
+                "Melhor Fora": f"{g['best_odds']['h2h']['fora']['odd']:.2f} ({g['best_odds']['h2h']['fora']['bookmaker']})",
+                "Spread (C)": round(spread, 2),
+                "Consenso Casa": f"{g['market_consensus']['h2h']['casa_prob']:.1%}"
             })
         
         return pd.DataFrame(summary_data)
@@ -225,8 +250,14 @@ class OddsFetcher:
                     "home_team": h, "away_team": a,
                     "commence_time": (datetime.now(timezone.utc) + timedelta(hours=i+2)).isoformat(),
                     "bookmakers": [
-                        {"key": "bet365", "title": "Bet365", "markets": [{"key": "h2h", "outcomes": [{"name": h, "price": 2.1}, {"name": "Draw", "price": 3.4}, {"name": a, "price": 3.2}]}]},
-                        {"key": "betano", "title": "Betano", "markets": [{"key": "h2h", "outcomes": [{"name": h, "price": 2.05}, {"name": "Draw", "price": 3.5}, {"name": a, "price": 3.25}]}]}
+                        {"key": "bet365", "title": "Bet365", "markets": [
+                            {"key": "h2h", "outcomes": [{"name": h, "price": 2.1}, {"name": "Draw", "price": 3.4}, {"name": a, "price": 3.2}]},
+                            {"key": "totals", "outcomes": [{"name": "Over", "price": 1.95, "point": 2.5}, {"name": "Under", "price": 1.85, "point": 2.5}]}
+                        ]},
+                        {"key": "betano", "title": "Betano", "markets": [
+                            {"key": "h2h", "outcomes": [{"name": h, "price": 2.05}, {"name": "Draw", "price": 3.5}, {"name": a, "price": 3.25}]},
+                            {"key": "spreads", "outcomes": [{"name": h, "price": 1.9, "point": -0.5}, {"name": a, "price": 1.9, "point": +0.5}]}
+                        ]}
                     ]
                 })
         elif "basketball" in sport:
@@ -238,8 +269,14 @@ class OddsFetcher:
                     "home_team": h, "away_team": a,
                     "commence_time": (datetime.now(timezone.utc) + timedelta(hours=i+5)).isoformat(),
                     "bookmakers": [
-                        {"key": "pinnacle", "title": "Pinnacle", "markets": [{"key": "h2h", "outcomes": [{"name": h, "price": 1.91}, {"name": a, "price": 1.91}]}]},
-                        {"key": "bet365", "title": "Bet365", "markets": [{"key": "h2h", "outcomes": [{"name": h, "price": 1.85}, {"name": a, "price": 1.95}]}]}
+                        {"key": "pinnacle", "title": "Pinnacle", "markets": [
+                            {"key": "h2h", "outcomes": [{"name": h, "price": 1.91}, {"name": a, "price": 1.91}]},
+                            {"key": "totals", "outcomes": [{"name": "Over", "price": 1.91, "point": 220.5}, {"name": "Under", "price": 1.91, "point": 220.5}]}
+                        ]},
+                        {"key": "bet365", "title": "Bet365", "markets": [
+                            {"key": "h2h", "outcomes": [{"name": h, "price": 1.85}, {"name": a, "price": 1.95}]},
+                            {"key": "spreads", "outcomes": [{"name": h, "price": 1.9, "point": -5.5}, {"name": a, "price": 1.9, "point": +5.5}]}
+                        ]}
                     ]
                 })
         

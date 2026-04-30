@@ -42,6 +42,9 @@ FOOTBALL_LEAGUES: list[str] = [
 
 BASKETBALL_LEAGUES: list[str] = [
     "basketball_nba",            # NBA
+    "basketball_euroleague",     # Euroleague
+    "basketball_ncaab",          # NCAA Basketball
+    "basketball_brazil_nbb",     # NBB Brasil
 ]
 
 ALL_LEAGUES: list[str] = FOOTBALL_LEAGUES + BASKETBALL_LEAGUES
@@ -69,7 +72,7 @@ MIN_ODDS: float = 1.20   # odds mínimas consideradas
 # ──────────────────────────────────────────────
 DEFAULT_BANKROLL: float = float(os.getenv("BANKROLL", "100"))  # R$
 KELLY_FRACTION: float = 0.25  # Kelly fracionado (25 % do Kelly completo)
-MAX_BET_PCT: float = 0.05     # aposta máxima = 5 % da banca
+MAX_BET_PCT: float = 0.10     # aposta máxima = 10 % da banca
 MIN_BET_PCT: float = 0.01     # aposta mínima = 1 % da banca
 
 # ──────────────────────────────────────────────

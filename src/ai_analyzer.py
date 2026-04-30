@@ -63,11 +63,12 @@ class AIAnalyzer:
             "Você é um analista quantitativo especialista em apostas esportivas "
             "de valor esperado. Sua função é estimar probabilidades mais precisas que "
             "as odds do mercado com base em dados estatísticos e contextuais. "
+            "Você deve analisar múltiplos mercados (Vencedor, Over/Under, Handicaps) e escolher o de maior valor."
             "Seja conservador: só recomende apostas com edge genuíno. "
             "Responda SOMENTE com JSON válido, sem markdown, sem texto adicional."
         )
 
-        mc = game.get("market_consensus", {})
+        h2h_mc = game.get("market_consensus", {}).get("h2h", {})
         best = game.get("best_odds", {})
 
         user_prompt = f"""Analise este jogo:
@@ -76,33 +77,33 @@ Jogo: {game.get('home_team')} vs {game.get('away_team')}
 Competição: {game.get('league')}
 Data/Hora (Brasília): {game.get('commence_time')}
 
-Probabilidades implícitas do mercado (sem margem da casa):
-- {game.get('home_team')} vence: {mc.get('home_prob', 0) * 100:.1f}%
-- Empate: {mc.get('draw_prob', 0) * 100:.1f}%
-- {game.get('away_team')} vence: {mc.get('away_prob', 0) * 100:.1f}%
+Probabilidades implícitas do mercado H2H (sem margem):
+- {game.get('home_team')} vence: {h2h_mc.get('casa_prob', 0) * 100:.1f}%
+- Empate: {h2h_mc.get('empate_prob', 0) * 100:.1f}%
+- {game.get('away_team')} vence: {h2h_mc.get('fora_prob', 0) * 100:.1f}%
 
 Melhores odds disponíveis:
-- {game.get('home_team')}: {best.get('home', {}).get('odd')} ({best.get('home', {}).get('bookmaker')})
-- Empate: {best.get('draw', {}).get('odd')} ({best.get('draw', {}).get('bookmaker')})
-- {game.get('away_team')}: {best.get('away', {}).get('odd')} ({best.get('away', {}).get('bookmaker')})
+- H2H: {json.dumps(best.get('h2h', {}), ensure_ascii=False)}
+- Totais (Gols): {json.dumps(best.get('totals', {}), ensure_ascii=False)}
+- Handicaps (Spreads): {json.dumps(best.get('spreads', {}), ensure_ascii=False)}
 
-Com base no seu conhecimento sobre essas equipes e competição, forneça:
+Com base no seu conhecimento, identifique a melhor aposta entre esses mercados. Forneça:
 
 {{
-  "home_prob": número entre 0 e 100,
-  "draw_prob": número entre 0 e 100,
-  "away_prob": número entre 0 e 100,
-  "best_bet": "home" | "draw" | "away" | "skip",
-  "edge": diferença entre sua probabilidade e a do mercado (pontos percentuais),
-  "ev": expected value calculado = (sua_prob/100 * melhor_odd) - 1,
+  "market": "h2h" | "totals",
+  "outcome": "casa, fora, empate, Over 2.5, Under 2.5, etc.",
+  "best_bet": "NOME NA BETNACIONAL (ex: 'Flamengo', 'Acima de 2.5', 'Abaixo de 1.5')",
+  "prob": número entre 0 e 100 (probabilidade estimada),
+  "edge": diferença percentual vs mercado,
+  "ev": expected value,
   "confidence": "low" | "medium" | "high",
-  "reasoning": "explicação em máximo 3 frases diretas",
-  "key_factors": ["até 4 fatores que justificam sua estimativa"],
-  "red_flags": ["riscos que podem invalidar a análise"],
-  "recommended_stake_pct": número (% da banca, máx 5)
+  "reasoning": "explicação em Português",
+  "key_factors": ["fatores"],
+  "red_flags": ["riscos"],
+  "recommended_stake_pct": número (% da banca, máx 10)
 }}
 
-Regras: se edge < 6, retorne best_bet: "skip".
+Regras: se edge < 6, retorne market: "skip".
 Se confidence for low, recommended_stake_pct não pode ser > 1.5."""
 
         try:
@@ -119,7 +120,7 @@ Se confidence for low, recommended_stake_pct não pode ser > 1.5."""
             
             # Garante a regra manual caso a IA falhe
             if result.get("edge", 0) < 6:
-                result["best_bet"] = "skip"
+                result["market"] = "skip"
             if result.get("confidence") == "low" and result.get("recommended_stake_pct", 0) > 1.5:
                 result["recommended_stake_pct"] = 1.5
                 
@@ -127,11 +128,7 @@ Se confidence for low, recommended_stake_pct não pode ser > 1.5."""
             return result
         except Exception as e:
             console.print(f"[red]Erro ao analisar jogo {game.get('home_team')}: {e}[/red]")
-            return {"best_bet": "skip", "error": str(e), "game_info": game}
-
-    # ──────────────────────────────────────────
-    # Análise de Basquete (NBA)
-    # ──────────────────────────────────────────
+            return {"market": "skip", "error": str(e), "game_info": game}
 
     def analyze_nba_game(self, game: dict[str, Any]) -> dict[str, Any]:
         """Constrói o prompt e analisa um jogo da NBA com Claude."""
@@ -141,10 +138,13 @@ Se confidence for low, recommended_stake_pct não pode ser > 1.5."""
             "Sua função é estimar probabilidades com base em estatísticas avançadas "
             "(pace, offensive/defensive rating, matchups, home/away splits) e "
             "contexto atual (back-to-backs, rest days, injury report). "
+            "Você deve analisar múltiplos mercados (Vencedor, Over/Under) e escolher o de maior valor."
+            "PROIBIDO usar termos técnicos como 'subir o ponto', 'aposta no under', 'spread'. "
+            "USE LITERALMENTE: 'Acima de 2.5', 'Abaixo de 220.5', ou o Nome do Time."
             "Responda SOMENTE com JSON válido, sem markdown, sem texto adicional."
         )
 
-        mc = game.get("market_consensus", {})
+        h2h_mc = game.get("market_consensus", {}).get("h2h", {})
         best = game.get("best_odds", {})
 
         user_prompt = f"""Analise este jogo da NBA:
@@ -153,29 +153,30 @@ Jogo: {game.get('home_team')} vs {game.get('away_team')}
 Data/Hora (Brasília): {game.get('commence_time')}
 
 Probabilidades implícitas do mercado Moneyline:
-- {game.get('home_team')}: {mc.get('home_prob', 0) * 100:.1f}%
-- {game.get('away_team')}: {mc.get('away_prob', 0) * 100:.1f}%
+- {game.get('home_team')}: {h2h_mc.get('casa_prob', 0) * 100:.1f}%
+- {game.get('away_team')}: {h2h_mc.get('fora_prob', 0) * 100:.1f}%
 
-Melhores odds Moneyline:
-- {game.get('home_team')}: {best.get('home', {}).get('odd')} ({best.get('home', {}).get('bookmaker')})
-- {game.get('away_team')}: {best.get('away', {}).get('odd')} ({best.get('away', {}).get('bookmaker')})
+Melhores odds disponíveis:
+- Moneyline (H2H): {json.dumps(best.get('h2h', {}), ensure_ascii=False)}
+- Totais (Pontos): {json.dumps(best.get('totals', {}), ensure_ascii=False)}
+- Handicaps (Spreads): {json.dumps(best.get('spreads', {}), ensure_ascii=False)}
 
 Forneça:
 {{
-  "home_prob": número entre 0 e 100,
-  "away_prob": número entre 0 e 100,
-  "market_type": "moneyline" | "spread" | "total",
-  "best_bet": "home" | "away" | "skip",
-  "edge": diferença percentual (sua probabilidade vs mercado),
-  "ev": expected value calculado = (sua_prob/100 * melhor_odd) - 1,
+  "market": "h2h" | "totals" | "spreads",
+  "outcome": "casa, fora, Over 220.5, Fora -4.5, etc.",
+  "best_bet": "NOME LITERAL NA BETNACIONAL (ex: 'LA Lakers', 'Acima de 220.5', 'Celtics -4.5')",
+  "prob": número entre 0 e 100 (probabilidade estimada),
+  "edge": diferença percentual,
+  "ev": expected value,
   "confidence": "low" | "medium" | "high",
-  "reasoning": "explicação focada em pace, back-to-backs ou lesões chaves (máx 3 frases)",
-  "key_factors": ["até 4 fatores justificando"],
-  "red_flags": ["riscos de blowout, rest management ou lesões de última hora"],
-  "recommended_stake_pct": número (% da banca, máx 5)
+  "reasoning": "explicação curta",
+  "key_factors": ["fatores"],
+  "red_flags": ["riscos"],
+  "recommended_stake_pct": número (% da banca, máx 10)
 }}
 
-Regras: se edge < 6, retorne best_bet: "skip".
+Regras: se edge < 6, retorne market: "skip".
 Se confidence for low, recommended_stake_pct não pode ser > 1.5."""
 
         try:
@@ -191,7 +192,7 @@ Se confidence for low, recommended_stake_pct não pode ser > 1.5."""
             result = self._extract_json(response.choices[0].message.content)
             
             if result.get("edge", 0) < 6:
-                result["best_bet"] = "skip"
+                result["market"] = "skip"
             if result.get("confidence") == "low" and result.get("recommended_stake_pct", 0) > 1.5:
                 result["recommended_stake_pct"] = 1.5
                 
@@ -199,7 +200,7 @@ Se confidence for low, recommended_stake_pct não pode ser > 1.5."""
             return result
         except Exception as e:
             console.print(f"[red]Erro ao analisar jogo da NBA {game.get('home_team')}: {e}[/red]")
-            return {"best_bet": "skip", "error": str(e), "game_info": game}
+            return {"market": "skip", "error": str(e), "game_info": game}
 
     # ──────────────────────────────────────────
     # Processamento em Lote
@@ -224,7 +225,7 @@ Se confidence for low, recommended_stake_pct não pode ser > 1.5."""
             else:
                 continue
 
-            if res.get("best_bet") != "skip":
+            if res.get("market") != "skip":
                 results.append(res)
             
             time.sleep(1) # Delay para evitar rate limits
@@ -264,9 +265,18 @@ Se confidence for low, recommended_stake_pct não pode ser > 1.5."""
 
         for s in signals:
             game = s.get("game_info", {})
-            bet = s.get("best_bet")
-            team_bet = game.get(f"{bet}_team") if bet in ["home", "away"] else "Empate"
-            odd_info = game.get("best_odds", {}).get(bet, {})
+            market = s.get("market")
+            outcome = s.get("outcome")
+            
+            # Resolve o nome do time se for casa/fora em H2H
+            if market == "h2h":
+                if outcome == "casa": team_bet = game.get("home_team")
+                elif outcome == "fora": team_bet = game.get("away_team")
+                else: team_bet = "Empate"
+            else:
+                team_bet = s.get("best_bet", outcome)
+
+            odd_info = game.get("best_odds", {}).get(market, {}).get(outcome, {})
             odd_val = odd_info.get("odd", 0)
             book = odd_info.get("bookmaker", "Desconhecido")
             

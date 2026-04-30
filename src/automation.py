@@ -33,10 +33,8 @@ async def run_full_pipeline():
         fetcher = OddsFetcher()
         analyzer = AIAnalyzer()
         
-        sports = ["soccer_brazil_campeonato", "soccer_epl", "basketball_nba"]
-        
         all_games = []
-        for sport in sports:
+        for sport in config.ALL_LEAGUES:
             console.print(f"[dim]Buscando odds para {sport}...[/dim]")
             games = await fetcher.get_upcoming_games(sport)
             if games:
