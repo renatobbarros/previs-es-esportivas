@@ -1,38 +1,43 @@
 [project]
-name = "sports-edge-ai"
-version = "0.1.0"
-description = "Sistema de análise de apostas esportivas com IA (Claude) e cálculo de Expected Value"
-authors = [{ name = "Sports Edge AI" }]
+name = "sports-edge-ai-pro"
+version = "2.0.0"
+description = "Multi-sport Value Betting Engine with Multi-layer AI and Advanced Analytics"
 readme = "README.md"
 requires-python = ">=3.11"
+authors = [{ name = "Sports Edge Engineering" }]
 dependencies = [
-    "httpx>=0.27.0",
     "streamlit>=1.35.0",
     "pandas>=2.2.0",
+    "httpx>=0.27.0",
+    "python-dotenv>=1.0.1",
+    "psycopg2-binary",
+    "asyncpg",
+    "sqlalchemy>=2.0.30",
+    "python-telegram-bot>=21.0",
+    "apscheduler>=3.10.4",
+    "openai>=1.30.0",
+    "loguru>=0.7.2",
+    "pydantic-settings>=2.2.1",
+    "altair>=5.3.0",
     "numpy>=1.26.0",
-    "python-dotenv>=1.0.0",
-    "rich>=13.7.0",
-    "apscheduler>=3.10.0",
     "feedparser>=6.0.11",
-    "openai>=2.33.0",
-]
-
-[project.optional-dependencies]
-dev = [
-    "pytest>=8.0.0",
-    "ruff>=0.4.0",
+    "scipy>=1.11.0",
+    "scikit-learn>=1.3.0",
+    "pytz>=2024.1",
+    "rich>=13.7.0",
+    "structlog",
+    "psutil",
 ]
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-[tool.ruff]
-line-length = 100
-target-version = "py311"
-
-[tool.ruff.lint]
-select = ["E", "F", "I"]
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "ruff>=0.4.0",
+]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src"]
+packages = ["core", "sports", "analysis", "dashboard", "src", "utils"]

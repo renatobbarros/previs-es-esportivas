@@ -1,103 +1,101 @@
-"""
-config.py — Configurações centrais do Sports Edge AI
-"""
-from __future__ import annotations
-
-import os
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from pathlib import Path
+from typing import Optional
 
-from dotenv import load_dotenv
+class Settings(BaseSettings):
+    # Configuração do Pydantic para ler o .env
+    model_config = SettingsConfigDict(
+        env_file=".env", 
+        env_file_encoding="utf-8",
+        extra="ignore"
+    )
 
-load_dotenv()
+    # --- APIs DE DADOS ---
+    THE_ODDS_API_KEY: str
+    PANDASCORE_API_KEY: str
+    GROQ_API_KEY: str
+    ADMIN_PASSWORD: str = "mudar_em_producao"
+    
+    # --- APIs DE IA ---
+    ANTHROPIC_API_KEY: Optional[str] = None
+    CEREBRAS_API_KEY: Optional[str] = None
+    GROQ_MODEL: str = "llama-3.3-70b-versatile"
 
-# ──────────────────────────────────────────────
-# Paths
-# ──────────────────────────────────────────────
-ROOT_DIR = Path(__file__).parent
-DATA_DIR = ROOT_DIR / "data"
-SIGNALS_DIR = DATA_DIR / "signals"
-HISTORICAL_DIR = DATA_DIR / "historical"
-BACKTEST_DIR = DATA_DIR / "backtest_results"
+    # --- COMUNICAÇÃO ---
+    TELEGRAM_BOT_TOKEN: str
+    TELEGRAM_CHAT_ID: str
+    OWNER_TELEGRAM_ID: int
 
-for _dir in (SIGNALS_DIR, HISTORICAL_DIR, BACKTEST_DIR):
-    _dir.mkdir(parents=True, exist_ok=True)
+    # --- BANCO DE DADOS ---
+    DATABASE_PATH: str = "data/sports_edge.db"
+    POSTGRES_URL: Optional[str] = None
+    
+    @property
+    def ROOT_DIR(self) -> Path:
+        return Path(__file__).parent
+    
+    @property
+    def DATA_DIR(self) -> Path:
+        return self.ROOT_DIR / "data"
 
-# ──────────────────────────────────────────────
-# API Keys
-# ──────────────────────────────────────────────
-CEREBRAS_API_KEY: str = os.getenv("CEREBRAS_API_KEY", "")
-ODDS_API_KEY: str = os.getenv("ODDS_API_KEY", "")
-RAPIDAPI_KEY: str = os.getenv("RAPIDAPI_KEY", "")
+    @property
+    def SIGNALS_DIR(self) -> Path:
+        return self.DATA_DIR / "signals"
 
-# ──────────────────────────────────────────────
-# Ligas monitoradas — The Odds API sport keys
-# ──────────────────────────────────────────────
-FOOTBALL_LEAGUES: list[str] = [
-    "soccer_epl",                # Premier League
-    "soccer_uefa_champs_league", # Champions League
-    "soccer_spain_la_liga",      # La Liga
-    "soccer_germany_bundesliga", # Bundesliga
-    "soccer_brazil_campeonato",  # Brasileirão Série A
-]
+    @property
+    def HISTORICAL_DIR(self) -> Path:
+        return self.DATA_DIR / "historical"
 
-BASKETBALL_LEAGUES: list[str] = [
-    "basketball_nba",            # NBA
-    "basketball_euroleague",     # Euroleague
-    "basketball_ncaab",          # NCAA Basketball
-    "basketball_brazil_nbb",     # NBB Brasil
-]
+    @property
+    def BACKTEST_DIR(self) -> Path:
+        return self.DATA_DIR / "backtests"
 
-ALL_LEAGUES: list[str] = FOOTBALL_LEAGUES + BASKETBALL_LEAGUES
+    # --- GESTÃO DE RISCO ---
+    BANKROLL: float = 20.0
+    MIN_EDGE_THRESHOLD: float = 0.06
+    MIN_CONFIDENCE_THRESHOLD: int = 60
+    KELLY_FRACTION: float = 0.25
+    MAX_STAKE_PERCENT: float = 0.05
+    PROFIT_SHARE_PCT: float = 0.10
+    
+    # Aliases para compatibilidade legada
+    @property
+    def DEFAULT_BANKROLL(self) -> float: return self.BANKROLL
+    @property
+    def MAX_BET_PCT(self) -> float: return self.MAX_STAKE_PERCENT
+    @property
+    def MIN_BET_PCT(self) -> float: return 0.01 # 1% default
 
-# ──────────────────────────────────────────────
-# Bookmakers prioritários (ordem de preferência)
-# ──────────────────────────────────────────────
-BOOKMAKERS: list[str] = [
-    "bet365",
-    "betano",
-    "unibet",
-    "pinnacle",
-]
+    # --- SISTEMA ---
+    LOG_LEVEL: str = "INFO"
+    REFRESH_INTERVAL: int = 3600
+    CEREBRAS_MODEL: str = "llama3.1-70b"
+    
+    ENABLE_FOOTBALL: bool = True
+    ENABLE_BASKETBALL: bool = True
+    ENABLE_ESPORTS: bool = True
+    ENABLE_DEEP_ANALYSIS: bool = False
 
-# ──────────────────────────────────────────────
-# Parâmetros de edge e valor esperado
-# ──────────────────────────────────────────────
-MIN_EDGE: float = 0.07   # edge mínimo aceitável (7 %)
-MIN_EV: float = 0.05     # EV mínimo aceitável (5 %)
-MAX_ODDS: float = 10.0   # odds máximas consideradas
-MIN_ODDS: float = 1.20   # odds mínimas consideradas
+    FOOTBALL_LEAGUES: list[str] = ["soccer_epl", "soccer_brazil_campeonato"]
+    BASKETBALL_LEAGUES: list[str] = ["basketball_nba"]
+    
+    @property
+    def ALL_LEAGUES(self) -> list[str]:
+        return self.FOOTBALL_LEAGUES + self.BASKETBALL_LEAGUES + ["esports"]
 
-# ──────────────────────────────────────────────
-# Gestão de banca
-# ──────────────────────────────────────────────
-DEFAULT_BANKROLL: float = float(os.getenv("BANKROLL", "100"))  # R$
-KELLY_FRACTION: float = 0.25  # Kelly fracionado (25 % do Kelly completo)
-MAX_BET_PCT: float = 0.10     # aposta máxima = 10 % da banca
-MIN_BET_PCT: float = 0.01     # aposta mínima = 1 % da banca
+    @property
+    def MIN_EDGE(self) -> float: return self.MIN_EDGE_THRESHOLD
+    @property
+    def MIN_EV(self) -> float: return 0.05
+    @property
+    def MIN_ODDS(self) -> float: return 1.20
+    @property
+    def MAX_ODDS(self) -> float: return 5.00
 
-# ──────────────────────────────────────────────
-# Cerebras / IA
-# ──────────────────────────────────────────────
-CEREBRAS_MODEL: str = "llama3.1-8b"
-IA_MAX_TOKENS: int = 1024
-IA_TEMPERATURE: float = 0.0  # baixo para análise objetiva
-
-# ──────────────────────────────────────────────
-# Agendamento
-# ──────────────────────────────────────────────
-REFRESH_INTERVAL: int = int(os.getenv("REFRESH_INTERVAL", "300"))  # segundos
-
-# ──────────────────────────────────────────────
-# RSS Feeds — notícias esportivas
-# ──────────────────────────────────────────────
-NEWS_FEEDS: list[str] = [
-    "https://www.espn.com/espn/rss/news",
-    "https://feeds.bbci.co.uk/sport/football/rss.xml",
-    "https://globoesporte.globo.com/rss.xml",
-    "https://www.skysports.com/rss/12040",   # Sky Sports Football
-]
-
-# ──────────────────────────────────────────────
-# Logging
-# ──────────────────────────────────────────────
-LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
+# Instância global importável
+try:
+    settings = Settings()
+except Exception as e:
+    print("\n❌ ERRO DE CONFIGURAÇÃO: Verifique se o arquivo .env está correto.")
+    print(f"Detalhes: {e}\n")
+    raise SystemExit(1)

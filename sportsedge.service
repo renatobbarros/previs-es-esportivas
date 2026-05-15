@@ -1,0 +1,15 @@
+[Unit]
+Description=Sports Edge AI Pro - Betting Automation
+After=network.target
+
+[Service]
+User=renato
+WorkingDirectory=/home/renato/Documentos/previsão de apostas esportivas/sports-edge-ai
+ExecStart=/home/renato/Documentos/previsão de apostas esportivas/sports-edge-ai/start_all.sh
+Restart=always
+RestartSec=10
+StandardOutput=append:/home/renato/Documentos/previsão de apostas esportivas/sports-edge-ai/data/logs/systemd.log
+StandardError=append:/home/renato/Documentos/previsão de apostas esportivas/sports-edge-ai/data/logs/systemd.log
+
+[Install]
+WantedBy=multi-user.target

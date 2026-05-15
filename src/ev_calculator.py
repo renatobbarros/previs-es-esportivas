@@ -13,7 +13,7 @@ from rich.table import Table
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
-import config
+from config import settings
 
 console = Console()
 
@@ -39,7 +39,7 @@ class OddsSignal:
 
     @property
     def is_value(self) -> bool:
-        return self.edge >= config.MIN_EDGE and self.ev >= config.MIN_EV
+        return self.edge >= settings.MIN_EDGE and self.ev >= settings.MIN_EV
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -111,7 +111,7 @@ class EVCalculator:
         """
         signals: list[OddsSignal] = []
 
-        bookmakers = game.get("bookmakers", [])
+        bookmakers = game.get("bookmakers", {})
         if not bookmakers:
             return signals
 
@@ -119,12 +119,13 @@ class EVCalculator:
         market_key = "h2h"  # head-to-head (1X2)
         outcome_odds: dict[str, list[float]] = {}
 
-        for bm in bookmakers:
-            markets = bm.get("markets", {})
+        # O fetcher agora produz um dict de bookmakers
+        for bm_key, bm_data in bookmakers.items():
+            markets = bm_data.get("markets", {})
             if market_key not in markets:
                 continue
             for outcome_name, price in markets[market_key].items():
-                if config.MIN_ODDS <= price <= config.MAX_ODDS:
+                if settings.MIN_ODDS <= price <= settings.MAX_ODDS:
                     outcome_odds.setdefault(outcome_name, []).append(price)
 
         if not outcome_odds:
@@ -139,14 +140,14 @@ class EVCalculator:
         fair_prob_map = dict(zip(outcomes, fair_probs))
 
         # Verifica cada bookmaker em busca de value
-        for bm in bookmakers:
-            markets = bm.get("markets", {})
+        for bm_key, bm_data in bookmakers.items():
+            markets = bm_data.get("markets", {})
             if market_key not in markets:
                 continue
 
-            bm_name = bm.get("name", "unknown")
+            bm_name = bm_data.get("title", bm_key)
             for outcome_name, price in markets[market_key].items():
-                if not (config.MIN_ODDS <= price <= config.MAX_ODDS):
+                if not (settings.MIN_ODDS <= price <= settings.MAX_ODDS):
                     continue
 
                 fair_prob = fair_prob_map.get(outcome_name)
@@ -157,23 +158,24 @@ class EVCalculator:
                 edge = self.calculate_edge(fair_prob, implied)
                 ev = self.calculate_ev(fair_prob, price)
 
-                signal = OddsSignal(
-                    game_id=game.get("id", ""),
-                    sport=game.get("sport", ""),
-                    league=game.get("league", ""),
-                    home_team=game.get("home_team", ""),
-                    away_team=game.get("away_team", ""),
-                    commence_time=game.get("commence_time", ""),
-                    market=market_key,
-                    outcome=outcome_name,
-                    bookmaker=bm_name,
-                    odds=price,
-                    implied_prob=implied,
-                    fair_prob=fair_prob,
-                    edge=edge,
-                    ev=ev,
-                )
-                signals.append(signal)
+                if edge >= settings.MIN_EDGE_THRESHOLD:
+                    signal = OddsSignal(
+                        game_id=game.get("id", ""),
+                        sport=game.get("sport", ""),
+                        league=game.get("league", ""),
+                        home_team=game.get("home_team", ""),
+                        away_team=game.get("away_team", ""),
+                        commence_time=game.get("commence_time", ""),
+                        market=market_key,
+                        outcome=outcome_name,
+                        bookmaker=bm_name,
+                        odds=price,
+                        implied_prob=implied,
+                        fair_prob=fair_prob,
+                        edge=edge,
+                        ev=ev,
+                    )
+                    signals.append(signal)
 
         return signals
 
@@ -194,61 +196,124 @@ class EVCalculator:
     # Display
     # ──────────────────────────────────────────
 
-    def print_signals(self, signals: list[OddsSignal]) -> None:
+    def triage_games(self, games: list[dict], news_contexts: dict = None) -> list[dict]:
+        """
+        Filtra apenas os jogos que valem a pena ser analisados pela IA.
+        Critérios:
+        1. Existe um edge matemático claro no mercado (arbitragem ou value).
+        2. Existe contexto de notícias relevante (lesões, alertas).
+        3. O spread entre bookmakers é alto (> 5%).
+        """
+        triaged = []
+        news_contexts = news_contexts or {}
+        
+        for game in games:
+            has_news = game["id"] in news_contexts
+            
+            # Cálculo de spread de mercado
+            best_odds = game.get("best_odds", {}).get("h2h", {})
+            h = best_odds.get("casa", {}).get("odd", 0)
+            d = best_odds.get("empate", {}).get("odd", 0)
+            a = best_odds.get("fora", {}).get("odd", 0)
+            
+            if h > 0 and d > 0 and a > 0:
+                market_margin = (1/h + 1/d + 1/a) - 1
+                # Se a margem for muito baixa ou negativa (raro), há ineficiência
+                if market_margin < 0.02 or has_news:
+                    triaged.append(game)
+                    continue
+            
+            # Outros critérios podem ser adicionados aqui
+            if has_news:
+                triaged.append(game)
+        
+        console.print(f"[cyan]🎯 Triagem: {len(triaged)}/{len(games)} jogos selecionados para análise de IA.[/cyan]")
+        return triaged
+
+    def apply_ai_results(self, ai_results: list[dict]) -> list[dict]:
+        """
+        Recebe os resultados qualitativos da IA e aplica a matemática rigorosa.
+        Retorna os sinais finais prontos para o Telegram/Dashboard.
+        """
+        from src.kelly import calculate_kelly
+        
+        final_signals = []
+        for res in ai_results:
+            game = res["game_info"]
+            prob_ia = res["prob_real"]
+            
+            # Busca a melhor odd disponível para a sugestão da IA
+            market_data = game.get("best_odds", {})
+            
+            best_odd = 0
+            found_outcome = ""
+            found_market = ""
+            
+            # Busca simples nos mercados H2H e Totais
+            for m_name, outcomes in market_data.items():
+                for o_name, o_data in outcomes.items():
+                    # Se o nome sugerido pela IA está contido no nome do mercado ou vice-versa
+                    if res["best_bet_name"].lower() in o_name.lower() or o_name.lower() in res["best_bet_name"].lower():
+                        best_odd = o_data.get("odd", 0)
+                        found_outcome = o_name
+                        found_market = m_name
+                        break
+                if best_odd > 0: break
+
+            if best_odd <= 1.0:
+                continue
+
+            # Cálculos Matemáticos (Sem Alucinação)
+            edge = prob_ia - (1/best_odd)
+            ev = (prob_ia * best_odd) - 1
+            
+            if ev > 0:
+                stake_pct = calculate_kelly(best_odd, prob_ia, settings.KELLY_FRACTION)
+                
+                # Monta o sinal final
+                signal = {
+                    **res,
+                    "odd": best_odd,
+                    "market": found_market,
+                    "outcome": found_outcome,
+                    "edge_pct": round(edge * 100, 2),
+                    "ev": round(ev, 3),
+                    "stake_pct": round(stake_pct * 100, 2)
+                }
+                final_signals.append(signal)
+        
+        # Ordena por EV
+        return sorted(final_signals, key=lambda x: x["ev"], reverse=True)
+
+
+    def print_signals(self, signals: list[dict]) -> None:
         if not signals:
-            console.print("[yellow]Nenhum value bet encontrado.[/yellow]")
+            console.print("[yellow]Nenhum sinal encontrado.[/yellow]")
             return
 
-        table = Table(title="🎯 Value Bets Detectadas", show_lines=True)
+        table = Table(title="🎯 Sinais de Aposta Otimizados", show_lines=True)
         table.add_column("Jogo", style="white")
-        table.add_column("Liga", style="cyan", no_wrap=True)
-        table.add_column("Outcome", style="bold")
-        table.add_column("Book", style="magenta")
-        table.add_column("Odds", justify="right", style="yellow")
+        table.add_column("Aposta", style="bold green")
+        table.add_column("Odd", justify="right", style="yellow")
         table.add_column("Edge", justify="right", style="green")
         table.add_column("EV", justify="right", style="bright_green")
+        table.add_column("Stake", justify="right", style="cyan")
 
-        for s in sorted(signals, key=lambda x: x.ev, reverse=True):
+        for s in signals:
+            game = s.get("game_info", {})
             table.add_row(
-                f"{s.home_team} vs {s.away_team}",
-                s.league,
-                s.outcome,
-                s.bookmaker,
-                f"{s.odds:.2f}",
-                f"{s.edge:.1%}",
-                f"{s.ev:.1%}",
+                f"{game.get('home_team')} x {game.get('away_team')}",
+                s.get("best_bet_name"),
+                f"{s.get('odd'):.2f}",
+                f"{s.get('edge_pct'):.1f}%",
+                f"{s.get('ev'):.3f}",
+                f"{s.get('stake_pct'):.1f}%"
             )
 
         console.print(table)
 
 
 if __name__ == "__main__":
-    # Teste rápido com dados mockados
-    mock_games = [
-        {
-            "id": "test123",
-            "sport": "soccer_epl",
-            "league": "Premier League",
-            "home_team": "Arsenal",
-            "away_team": "Chelsea",
-            "commence_time": "2025-01-01T15:00:00Z",
-            "bookmakers": [
-                {
-                    "name": "bet365",
-                    "markets": {"h2h": {"Arsenal": 2.10, "Draw": 3.40, "Chelsea": 3.20}},
-                },
-                {
-                    "name": "pinnacle",
-                    "markets": {"h2h": {"Arsenal": 2.30, "Draw": 3.30, "Chelsea": 3.10}},
-                },
-                {
-                    "name": "betano",
-                    "markets": {"h2h": {"Arsenal": 2.00, "Draw": 3.50, "Chelsea": 3.50}},
-                },
-            ],
-        }
-    ]
-
+    # Teste rápido
     calc = EVCalculator()
-    signals = calc.analyze_all(mock_games)
-    calc.print_signals(signals)
+    print("EV Calculator operacional.")

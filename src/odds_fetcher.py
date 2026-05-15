@@ -13,28 +13,42 @@ from typing import Any
 
 import httpx
 import pandas as pd
-from dotenv import load_dotenv
+from config import settings
 from rich.console import Console
 from rich.table import Table
-
-# Adiciona o diretório raiz ao path para importar config
-import sys
-sys.path.insert(0, str(Path(__file__).parent.parent))
-import config
-
-load_dotenv()
 console = Console()
 
 class OddsFetcher:
     """Busca odds, calcula consenso de mercado e melhores preços."""
 
-    def __init__(self, api_key: str | None = None):
-        self.api_key = api_key or config.ODDS_API_KEY
-        self.is_demo = not self.api_key
+    def __init__(self, api_keys: list[str] | None = None):
+        # Carrega todas as chaves disponíveis no .env se não passadas
+        if not api_keys:
+            self.keys = [settings.THE_ODDS_API_KEY]
+            # Adiciona chaves extras se existirem no ambiente (pode ser expandido no config.py se necessário)
+            self.keys = [k for k in self.keys if k]
+        else:
+            self.keys = api_keys
+
+        self.current_key_index = 0
+        self.is_demo = len(self.keys) == 0
         self.base_url = "https://api.the-odds-api.com/v4"
         
         if self.is_demo:
-            console.print("[bold yellow]⚠️ MODO DEMO ATIVADO:[/bold yellow] Chave de API não encontrada no .env. Usando dados fictícios.")
+            console.print("[bold yellow]⚠️ MODO DEMO ATIVADO:[/bold yellow] Nenhuma chave de API encontrada. Usando dados fictícios.")
+
+    @property
+    def api_key(self):
+        if self.is_demo: return None
+        return self.keys[self.current_key_index]
+
+    def rotate_key(self):
+        """Muda para a próxima chave disponível."""
+        if len(self.keys) > 1:
+            self.current_key_index = (self.current_key_index + 1) % len(self.keys)
+            console.print(f"[bold cyan]🔄 Rotação de Chave:[/bold cyan] Alternando para a chave {self.current_key_index + 1}")
+            return True
+        return False
 
     # ──────────────────────────────────────────
     # Cálculos de Probabilidade
@@ -86,14 +100,14 @@ class OddsFetcher:
                     if attempt == 0:
                         console.print(f"[dim]API Info: {remaining} requisições restantes.[/dim]")
 
-                    if response.status_code == 401:
-                        console.print("[bold red]ERRO:[/bold red] Chave de API inválida. Verifique o arquivo .env.")
-                        return []
-                    
-                    if response.status_code == 429:
-                        console.print(f"[yellow]Rate limit atingido. Tentativa {attempt+1}/3. Aguardando 2s...[/yellow]")
-                        await asyncio.sleep(2)
-                        continue
+                    if response.status_code in [401, 429] or "Usage quota" in response.text:
+                        console.print(f"[yellow]Aviso: Chave {self.current_key_index + 1} falhou (Erro {response.status_code}).[/yellow]")
+                        if self.rotate_key():
+                            # Tenta novamente com a nova chave (mesma tentativa)
+                            return await self.get_upcoming_games(sport)
+                        else:
+                            console.print("[bold red]ERRO:[/bold red] Todas as chaves atingiram o limite.")
+                            return []
 
                     response.raise_for_status()
                     games_data = response.json()
@@ -112,9 +126,39 @@ class OddsFetcher:
             
         return []
 
-    # ──────────────────────────────────────────
-    # Processamento e Normalização
-    # ──────────────────────────────────────────
+    async def get_recent_scores(self, sport: str, days_ago: int = 3) -> list[dict]:
+        """
+        Busca resultados/placares recentes para um esporte.
+        """
+        if self.is_demo:
+            return []
+
+        params = {
+            "apiKey": self.api_key,
+            "daysFrom": days_ago,
+        }
+        url = f"{self.base_url}/sports/{sport}/scores/"
+
+        async with httpx.AsyncClient(timeout=20) as client:
+            for attempt in range(3):
+                try:
+                    response = await client.get(url, params=params)
+                    
+                    if response.status_code in [401, 429]:
+                        if self.rotate_key():
+                            params["apiKey"] = self.api_key
+                            continue
+                        else:
+                            return []
+
+                    response.raise_for_status()
+                    return response.json()
+                except Exception as e:
+                    if attempt == 2:
+                        console.print(f"[red]Erro ao buscar scores para {sport}: {e}[/red]")
+                        return []
+                    await asyncio.sleep(1)
+        return []
 
     def _process_games(self, raw_games: list[dict], sport: str) -> list[dict]:
         """Processa a resposta bruta da API para o formato solicitado."""
@@ -140,10 +184,12 @@ class OddsFetcher:
                     "totals": {}, # Ex: "Over 2.5": {"odd": 2.1, "bookmaker": "Bet365"}
                     "spreads": {} # Ex: "Casa -1.5": {"odd": 1.9, "bookmaker": "Pinnacle"}
                 },
-                "market_consensus": {"h2h": {"casa_prob": 0.0, "empate_prob": 0.0, "fora_prob": 0.0}}
+                "market_consensus": {"h2h": {"casa_prob": 0.0, "empate_prob": 0.0, "fora_prob": 0.0}, "totals": {}}
             }
 
             all_h2h_no_vig = []
+            all_totals_no_vig = {}
+
             
             for bm in game.get("bookmakers", []):
                 bm_key = bm["key"]
@@ -172,6 +218,7 @@ class OddsFetcher:
                         
                     elif m_key == "totals":
                         # Outcomes: Over/Under with point
+                        normalized_totals = {}
                         for o in outcomes:
                             label = f"{o['name']} {o['point']}"
                             price = o["price"]
@@ -179,6 +226,17 @@ class OddsFetcher:
                             
                             if label not in item["best_odds"]["totals"] or price > item["best_odds"]["totals"][label]["odd"]:
                                 item["best_odds"]["totals"][label] = {"odd": price, "bookmaker": bm_title}
+                                
+                            # Prepare for no-vig calculation by point
+                            point_key = str(o['point'])
+                            normalized_totals.setdefault(point_key, {})[o['name']] = price
+                            
+                        for point_key, odds_dict in normalized_totals.items():
+                            if "Over" in odds_dict and "Under" in odds_dict:
+                                no_vig = self.calculate_no_vig_probs(odds_dict)
+                                if no_vig:
+                                    all_totals_no_vig.setdefault(f"Over {point_key}", []).append(no_vig.get("Over", 0))
+                                    all_totals_no_vig.setdefault(f"Under {point_key}", []).append(no_vig.get("Under", 0))
                                 
                     elif m_key == "spreads":
                         # Outcomes: Team name with point
@@ -197,6 +255,11 @@ class OddsFetcher:
                     probs = [p.get(key, 0) for p in all_h2h_no_vig if key in p]
                     if probs:
                         item["market_consensus"]["h2h"][f"{key}_prob"] = round(sum(probs) / len(probs), 4)
+                        
+            # Calcula consenso Totals
+            for label, probs in all_totals_no_vig.items():
+                if probs:
+                    item["market_consensus"]["totals"][label] = round(sum(probs) / len(probs), 4)
 
             processed.append(item)
         return processed
